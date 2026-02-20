@@ -1,76 +1,89 @@
 import express from "express";
+import fs from "fs";
+import { google } from "googleapis";
+import { XMLParser } from "fast-xml-parser";
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-/**
- * GET /api/transcript/:videoId
- */
+// Load credentials + token
+const credentials = JSON.parse(fs.readFileSync("./credentials.json"));
+const token = JSON.parse(fs.readFileSync("./token.json"));
+
+const { client_id, client_secret, redirect_uris } =
+  credentials.installed || credentials.web;
+
+const oAuth2Client = new google.auth.OAuth2(
+  client_id,
+  client_secret,
+  redirect_uris[0]
+);
+
+oAuth2Client.setCredentials(token);
+
+const youtube = google.youtube({
+  version: "v3",
+  auth: oAuth2Client,
+});
+
+app.get("/", (req, res) => {
+  res.send("YouTube Transcript API running");
+});
+
 app.get("/api/transcript/:videoId", async (req, res) => {
   try {
     const { videoId } = req.params;
 
-    // 1️⃣ Fetch YouTube watch page
-    const watchRes = await fetch(
-      `https://www.youtube.com/watch?v=${videoId}`
-    );
-    const html = await watchRes.text();
-
-    // 2️⃣ Extract player response JSON
-    const playerResponseMatch = html.match(
-      /ytInitialPlayerResponse\s*=\s*(\{.+?\});/
-    );
-
-    if (!playerResponseMatch) {
-      return res.status(404).json({ error: "Player response not found" });
-    }
-
-    const playerResponse = JSON.parse(playerResponseMatch[1]);
-
-    const tracks =
-      playerResponse?.captions?.playerCaptionsTracklistRenderer
-        ?.captionTracks;
-
-    if (!tracks || tracks.length === 0) {
-      return res.status(404).json({ error: "No captions available" });
-    }
-
-    // 3️⃣ Pick English track (fallback to first)
-    const englishTrack =
-      tracks.find((t) => t.languageCode === "en") || tracks[0];
-
-    const captionUrl = englishTrack.baseUrl;
-
-    // 4️⃣ Fetch caption XML
-    const captionRes = await fetch(captionUrl);
-    const xml = await captionRes.text();
-
-    // 5️⃣ Parse XML → plain text
-    const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/g)];
-
-    const transcript = textMatches
-      .map((m) =>
-        m[1]
-          .replace(/&amp;/g, "&")
-          .replace(/&#39;/g, "'")
-          .replace(/&quot;/g, '"')
-          .replace(/<[^>]+>/g, "")
-      )
-      .join(" ");
-
-    return res.json({
+    // 1️⃣ List captions
+    const captionsList = await youtube.captions.list({
+      part: "snippet",
       videoId,
-      language: englishTrack.languageCode,
-      transcript,
     });
+
+    if (!captionsList.data.items || captionsList.data.items.length === 0) {
+      return res.status(404).json({ error: "No captions found" });
+    }
+
+    const captionId = captionsList.data.items[0].id;
+
+    // 2️⃣ Download captions as text
+    const captionRes = await youtube.captions.download(
+      { id: captionId, tfmt: "ttml" },
+      { responseType: "text" } // ⭐ IMPORTANT
+    );
+
+    const xml = captionRes.data;
+
+    // 3️⃣ Parse XML
+    const parser = new XMLParser({ ignoreAttributes: false });
+    const json = parser.parse(xml);
+
+    const paragraphs = json?.tt?.body?.div?.p || [];
+
+    const extractText = (node) => {
+      if (typeof node === "string") return node;
+
+      if (node?.span) {
+        if (Array.isArray(node.span)) {
+          return node.span.map(extractText).join(" ");
+        }
+        return extractText(node.span);
+      }
+
+      return node["#text"] || "";
+    };
+
+    const transcript = paragraphs
+      .map(extractText)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    res.json({ videoId, transcript });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch transcript" });
+    console.error(err?.response?.data || err);
+    res.status(500).json({ error: "Transcript fetch failed" });
   }
 });
 
-export default app;
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));

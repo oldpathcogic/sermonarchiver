@@ -1,33 +1,14 @@
 import express from "express";
-import fetch from "node-fetch";
-import { YoutubeTranscript } from "youtube-transcript";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-/**
- * 🛡️ Fix for Render / cloud IP blocking
- * Forces a browser-like user agent for transcript requests
- */
-global.fetch = (url, options = {}) =>
-  fetch(url, {
-    ...options,
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      ...(options.headers || {})
-    }
-  });
-
-/**
- * ✅ Health check
- */
 app.get("/", (req, res) => {
   res.send("Sermon Archiver API running");
 });
 
 /**
- * 🎯 TRANSCRIPT ENDPOINT
+ * 🎯 Transcript endpoint using YouTube Innertube captions API
  */
 app.get("/transcript", async (req, res) => {
   const { videoId } = req.query;
@@ -37,44 +18,65 @@ app.get("/transcript", async (req, res) => {
   }
 
   try {
-    let transcript = null;
+    // 1️⃣ Get video page
+    const watchRes = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}`,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+      }
+    );
 
-    // 🔹 Attempt 1 — normal fetch (includes auto captions)
-    try {
-      transcript = await YoutubeTranscript.fetchTranscript(videoId, {
-        lang: "en",
-        country: "US",
-        includeGenerated: true
-      });
-    } catch (err) {
-      console.log("Primary transcript fetch failed:", err.message);
+    const html = await watchRes.text();
+
+    // 2️⃣ Extract captions JSON
+    const captionsMatch = html.match(
+      /"captions":(\{.*?"playerCaptionsTracklistRenderer".*?\})/
+    );
+
+    if (!captionsMatch) {
+      return res.status(404).json({ error: "No captions found" });
     }
 
-    // 🔹 Validate transcript
-    if (!transcript || transcript.length === 0) {
+    const captionsJSON = JSON.parse(captionsMatch[1]);
+
+    const tracks =
+      captionsJSON.playerCaptionsTracklistRenderer.captionTracks;
+
+    if (!tracks || tracks.length === 0) {
       return res.status(404).json({ error: "No transcript available" });
     }
 
-    // 🔹 Normalize format for Apps Script
-    const normalized = transcript.map(seg => ({
-      text: seg.text,
-      start: (seg.offset || 0) / 1000,
-      dur: (seg.duration || 0) / 1000
+    // 3️⃣ Prefer English
+    const track =
+      tracks.find(t => t.languageCode === "en") || tracks[0];
+
+    // 4️⃣ Fetch caption XML
+    const transcriptRes = await fetch(track.baseUrl);
+    const xml = await transcriptRes.text();
+
+    // 5️⃣ Parse XML
+    const lines = [...xml.matchAll(/<text start="(.*?)" dur="(.*?)">(.*?)<\/text>/g)];
+
+    const transcript = lines.map(match => ({
+      text: match[3]
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, "&"),
+      start: parseFloat(match[1]),
+      dur: parseFloat(match[2])
     }));
 
-    console.log(`Transcript success: ${videoId} (${normalized.length} segments)`);
-
-    return res.json({ transcript: normalized });
+    res.json({ transcript });
 
   } catch (err) {
-    console.error("Transcript endpoint error:", err);
-    return res.status(500).json({ error: "Transcript fetch failed" });
+    console.error(err);
+    res.status(500).json({ error: "Transcript fetch failed" });
   }
 });
 
-/**
- * 🚀 Start server
- */
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });

@@ -8,7 +8,7 @@ app.get("/", (req, res) => {
 });
 
 /**
- * 🎯 Transcript endpoint using YouTube Innertube captions API
+ * 🎯 Transcript endpoint using YouTube Player API
  */
 app.get("/transcript", async (req, res) => {
   const { videoId } = req.query;
@@ -18,46 +18,47 @@ app.get("/transcript", async (req, res) => {
   }
 
   try {
-    // 1️⃣ Get video page
-    const watchRes = await fetch(
-      `https://www.youtube.com/watch?v=${videoId}`,
+    // 1️⃣ Call YouTube player API
+    const playerRes = await fetch(
+      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyA-YouTubeKey",
       {
+        method: "POST",
         headers: {
+          "Content-Type": "application/json",
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: "WEB",
+              clientVersion: "2.20240101.00.00"
+            }
+          },
+          videoId
+        })
       }
     );
 
-    const html = await watchRes.text();
-
-    // 2️⃣ Extract captions JSON
-    const captionsMatch = html.match(
-      /"captions":(\{.*?"playerCaptionsTracklistRenderer".*?\})/
-    );
-
-    if (!captionsMatch) {
-      return res.status(404).json({ error: "No captions found" });
-    }
-
-    const captionsJSON = JSON.parse(captionsMatch[1]);
+    const playerData = await playerRes.json();
 
     const tracks =
-      captionsJSON.playerCaptionsTracklistRenderer.captionTracks;
+      playerData?.captions?.playerCaptionsTracklistRenderer
+        ?.captionTracks;
 
     if (!tracks || tracks.length === 0) {
       return res.status(404).json({ error: "No transcript available" });
     }
 
-    // 3️⃣ Prefer English
+    // Prefer English
     const track =
       tracks.find(t => t.languageCode === "en") || tracks[0];
 
-    // 4️⃣ Fetch caption XML
+    // 2️⃣ Fetch caption XML
     const transcriptRes = await fetch(track.baseUrl);
     const xml = await transcriptRes.text();
 
-    // 5️⃣ Parse XML
+    // 3️⃣ Parse XML
     const lines = [...xml.matchAll(/<text start="(.*?)" dur="(.*?)">(.*?)<\/text>/g)];
 
     const transcript = lines.map(match => ({

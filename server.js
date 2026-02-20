@@ -1,87 +1,71 @@
 import express from "express";
-import fetch from "node-fetch";
-import cors from "cors";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-
-app.get("/", (req, res) => {
-  res.send("Sermon Archiver API running");
-});
-
-app.get("/transcript", async (req, res) => {
-  const { videoId } = req.query;
-
-  if (!videoId) {
-    return res.status(400).json({ error: "Missing videoId" });
-  }
-
+/**
+ * GET /api/transcript/:videoId
+ */
+app.get("/api/transcript/:videoId", async (req, res) => {
   try {
-    console.log("Fetching transcript for:", videoId);
+    const { videoId } = req.params;
 
-    // 🎯 Request player data (TV client)
-    const playerRes = await fetch(
-      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0"
-        },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: "TVHTML5",
-              clientVersion: "7.20240101"
-            }
-          },
-          videoId
-        })
-      }
+    // 1️⃣ Fetch YouTube watch page
+    const watchRes = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}`
+    );
+    const html = await watchRes.text();
+
+    // 2️⃣ Extract player response JSON
+    const playerResponseMatch = html.match(
+      /ytInitialPlayerResponse\s*=\s*(\{.+?\});/
     );
 
-    const playerData = await playerRes.json();
-
-    const tracks =
-      playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-    if (!tracks || tracks.length === 0) {
-      console.log("❌ No caption tracks found");
-      return res.status(404).json({ error: "No transcript available" });
+    if (!playerResponseMatch) {
+      return res.status(404).json({ error: "Player response not found" });
     }
 
-    const track = tracks.find(t => t.languageCode === "en") || tracks[0];
+    const playerResponse = JSON.parse(playerResponseMatch[1]);
 
-    console.log("Using track:", track.languageCode);
+    const tracks =
+      playerResponse?.captions?.playerCaptionsTracklistRenderer
+        ?.captionTracks;
 
-    const transcriptRes = await fetch(track.baseUrl);
-    const xml = await transcriptRes.text();
+    if (!tracks || tracks.length === 0) {
+      return res.status(404).json({ error: "No captions available" });
+    }
 
-    const matches = [
-      ...xml.matchAll(/<text start="(.*?)" dur="(.*?)">(.*?)<\/text>/g)
-    ];
+    // 3️⃣ Pick English track (fallback to first)
+    const englishTrack =
+      tracks.find((t) => t.languageCode === "en") || tracks[0];
 
-    const transcript = matches.map(m => ({
-      text: m[3]
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, "&"),
-      start: parseFloat(m[1]),
-      dur: parseFloat(m[2])
-    }));
+    const captionUrl = englishTrack.baseUrl;
 
-    console.log("✅ Transcript segments:", transcript.length);
+    // 4️⃣ Fetch caption XML
+    const captionRes = await fetch(captionUrl);
+    const xml = await captionRes.text();
 
-    res.json({ transcript });
+    // 5️⃣ Parse XML → plain text
+    const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/g)];
 
+    const transcript = textMatches
+      .map((m) =>
+        m[1]
+          .replace(/&amp;/g, "&")
+          .replace(/&#39;/g, "'")
+          .replace(/&quot;/g, '"')
+          .replace(/<[^>]+>/g, "")
+      )
+      .join(" ");
+
+    return res.json({
+      videoId,
+      language: englishTrack.languageCode,
+      transcript,
+    });
   } catch (err) {
-    console.error("🔥 Transcript error:", err);
-    res.status(500).json({ error: "Transcript fetch failed" });
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch transcript" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
-});
+export default app;

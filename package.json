@@ -4,6 +4,7 @@
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "express": "^4.22.1",
+    "node-fetch": "^3.3.2",
     "openai": "^4.0.0",
     "youtube-transcript": "^1.2.1",
     "ytdl-core": "^4.11.5"

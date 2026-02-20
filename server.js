@@ -69,3 +69,8 @@ app.get("/api/transcript/:videoId", async (req, res) => {
 });
 
 export default app;
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

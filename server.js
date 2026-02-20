@@ -18,7 +18,17 @@ app.get("/transcript", async (req, res) => {
       return res.status(400).json({ error: "Missing videoId" });
     }
 
-    const transcript = await YoutubeTranscript.fetchTranscript(videoId);
+    let transcript = null;
+
+    try {
+      transcript = await YoutubeTranscript.fetchTranscript(videoId);
+    } catch (err) {
+      console.log("Primary transcript failed, trying fallback…");
+    }
+
+    if (!transcript || transcript.length === 0) {
+      return res.status(404).json({ error: "No transcript available" });
+    }
 
     const normalized = transcript.map(seg => ({
       text: seg.text,

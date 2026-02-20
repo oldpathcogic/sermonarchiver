@@ -1,25 +1,19 @@
 import express from "express";
-import fs from "fs";
 import { google } from "googleapis";
 import { XMLParser } from "fast-xml-parser";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Load credentials + token
-const credentials = JSON.parse(fs.readFileSync("./credentials.json"));
-const token = JSON.parse(fs.readFileSync("./token.json"));
-
-const { client_id, client_secret, redirect_uris } =
-  credentials.installed || credentials.web;
-
+// ✅ Load secrets from Render environment variables
 const oAuth2Client = new google.auth.OAuth2(
-  client_id,
-  client_secret,
-  redirect_uris[0]
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET
 );
 
-oAuth2Client.setCredentials(token);
+oAuth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+});
 
 const youtube = google.youtube({
   version: "v3",
@@ -40,17 +34,17 @@ app.get("/api/transcript/:videoId", async (req, res) => {
       videoId,
     });
 
-    if (!captionsList.data.items || captionsList.data.items.length === 0) {
+    if (!captionsList.data.items.length) {
       return res.status(404).json({ error: "No captions found" });
     }
 
     const captionId = captionsList.data.items[0].id;
 
-    // 2️⃣ Download captions as text
-    const captionRes = await youtube.captions.download(
-      { id: captionId, tfmt: "ttml" },
-      { responseType: "text" } // ⭐ IMPORTANT
-    );
+    // 2️⃣ Download captions
+    const captionRes = await youtube.captions.download({
+      id: captionId,
+      tfmt: "ttml",
+    });
 
     const xml = captionRes.data;
 
@@ -62,14 +56,12 @@ app.get("/api/transcript/:videoId", async (req, res) => {
 
     const extractText = (node) => {
       if (typeof node === "string") return node;
-
       if (node?.span) {
         if (Array.isArray(node.span)) {
           return node.span.map(extractText).join(" ");
         }
         return extractText(node.span);
       }
-
       return node["#text"] || "";
     };
 
@@ -81,9 +73,11 @@ app.get("/api/transcript/:videoId", async (req, res) => {
 
     res.json({ videoId, transcript });
   } catch (err) {
-    console.error(err?.response?.data || err);
+    console.error(err);
     res.status(500).json({ error: "Transcript fetch failed" });
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

@@ -1,66 +1,39 @@
 import express from "express";
-import axios from "axios";
-import ytdl from "ytdl-core";
-import FormData from "form-data";
-import fs from "fs";
-import path from "path";
-import os from "os";
+import { YoutubeTranscript } from "youtube-transcript";
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// health check
+app.get("/", (req, res) => {
+  res.send("Sermon Archiver API running");
+});
 
-app.post("/transcribe", async (req, res) => {
+// 🎯 TRANSCRIPT ENDPOINT
+app.get("/transcript", async (req, res) => {
   try {
-    const { videoId } = req.body;
-    if (!videoId) return res.status(400).json({ error: "Missing videoId" });
+    const { videoId } = req.query;
 
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    if (!videoId) {
+      return res.status(400).json({ error: "Missing videoId" });
+    }
 
-    const tempFile = path.join(os.tmpdir(), `${videoId}.mp3`);
+    const transcript = await YoutubeTranscript.fetchTranscript(videoId);
 
-    // 🎧 Download audio
-    const stream = ytdl(url, { filter: "audioonly", quality: "highestaudio" });
-    const writeStream = fs.createWriteStream(tempFile);
+    const normalized = transcript.map(seg => ({
+      text: seg.text,
+      start: seg.offset / 1000,
+      dur: seg.duration / 1000
+    }));
 
-    await new Promise((resolve, reject) => {
-      stream.pipe(writeStream);
-      stream.on("end", resolve);
-      stream.on("error", reject);
-    });
-
-    // 📤 Send to OpenAI transcription
-    const formData = new FormData();
-    formData.append("file", fs.createReadStream(tempFile));
-    formData.append("model", "gpt-4o-transcribe");
-
-    const response = await axios.post(
-      "https://api.openai.com/v1/audio/transcriptions",
-      formData,
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          ...formData.getHeaders(),
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      }
-    );
-
-    fs.unlinkSync(tempFile);
-
-    return res.json({
-      transcript: response.data.text,
-    });
+    res.json({ transcript: normalized });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Transcription failed" });
+    console.error("Transcript error:", err.message);
+    res.status(500).json({ error: "Transcript fetch failed" });
   }
 });
 
-app.get("/", (req, res) => res.send("Transcription server running"));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
+});
